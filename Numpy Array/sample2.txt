@@ -1,0 +1,119 @@
+1. __init__() — Initialization
+
+    Inputs: prompt (instruction for LLM), chunks (text data to process)
+
+    What it does:
+
+        Sets up Azure OpenAI client using environment variables.
+
+        Loads or initializes a FAISS index (via load_faiss()).
+
+        Prepares variables for later use (self.results, self.index_file, etc.).
+		
+		
+2. load_faiss() — Load or Create FAISS Index
+
+    What it does:
+
+        Checks if a saved FAISS index and stored text chunks (pkl) exist.
+
+            ✅ If they do: loads them into memory.
+
+            ❌ If not: initializes a new FAISS index for 3072-dimensional vectors (as required by text-embedding-3-large).
+			
+3. save_faiss() — Save Index and Chunks
+
+    What it does:
+
+        Saves the FAISS index to disk (faiss_index.bin).
+
+        Saves the corresponding text chunks to disk (text_chunks.pkl).
+		
+4. get_embedding(text) — Convert Text to Embedding
+
+    Input: A single text string
+
+    What it does:
+
+        Uses Azure OpenAI embedding model (e.g., text-embedding-3-large) to convert the input text into a 3072-dimensional vector.
+
+        Returns it as a NumPy float32 array.
+		
+		
+5. store_chunk(chunk) — Embed and Store Text
+
+    Input: A single text chunk
+
+    What it does:
+
+        Calls get_embedding() to get the embedding vector.
+
+        Adds the embedding to the FAISS index.
+
+        Appends the original chunk to self.stored_texts.
+
+        Persists everything by calling save_faiss().
+		
+6. get_similar_chunks(query_text, top_k=3) — Similarity Search
+
+    Input: A query string
+
+    What it does:
+
+        Embeds the query using get_embedding().
+
+        Searches the FAISS index for top k similar text embeddings.
+
+        Returns the actual corresponding text chunks from self.stored_texts.
+		
+7. llms(text) — Generate Answer with Similar Chunks
+
+    Input: A single chunk of user text
+
+    What it does:
+
+        Uses get_similar_chunks() to retrieve relevant historical context.
+
+        Constructs a prompt using:
+
+            The base prompt
+
+            Retrieved similar chunks
+
+            The new query
+
+        Sends this prompt to Azure OpenAI chat completion API.
+
+        Returns the LLM's generated answer.
+		
+
+8. gn_Case() — Process All Chunks
+
+    What it does:
+
+        Iterates over each chunk in self.chunks
+
+            Uses llms(chunk) to generate a response.
+
+            Appends the result to self.results.
+
+            Calls store_chunk(chunk) to save the chunk and its embedding.
+
+        Returns the final list of LLM results.
+		
+
+Overall Flow Summary:
+
+    Initialize with prompt and chunks.
+
+    Load or create FAISS index.
+
+    For each input chunk:
+
+        Use embedding model to find similar prior chunks.
+
+        Generate a response using the LLM with those references.
+
+        Save the new chunk and embedding to FAISS.
+
+    Return all generated results.
