@@ -1,0 +1,97 @@
+import psycopg2
+import os
+
+def create_table_if_not_exists(conn):
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS test_cases (
+        user_story_code VARCHAR(50) NOT NULL,
+        test_case_id VARCHAR(20) NOT NULL,
+        test_case_type VARCHAR(20),
+        test_case_name TEXT,
+        description TEXT,
+        precondition TEXT,
+        test_steps TEXT,
+        expected_results TEXT,
+        test_data TEXT,
+        PRIMARY KEY (user_story_code, test_case_id)
+    );
+    """
+    with conn.cursor() as cur:
+        cur.execute(create_table_query)
+        conn.commit()
+
+def insert_test_cases_from_txt(conn, txt_file_path, user_story_code):
+    with open(txt_file_path, 'r', encoding='utf-8') as file:
+        content = file.read()
+
+    test_cases = content.split("####")
+
+    with conn.cursor() as cur:
+        for test_case in test_cases:
+            lines = test_case.strip().split('\n')
+            if not lines or not lines[0].startswith("Test Case Id:"):
+                continue
+
+            def extract_field(field_name):
+                for line in lines:
+                    if line.startswith(field_name):
+                        return line.replace(field_name, '').strip()
+                return ''
+
+            def extract_multiline_field(start_label, stop_labels):
+                start_index = -1
+                for i, line in enumerate(lines):
+                    if line.startswith(start_label):
+                        start_index = i + 1
+                        break
+                if start_index == -1:
+                    return ''
+                collected = []
+                for line in lines[start_index:]:
+                    if any(line.startswith(lbl) for lbl in stop_labels):
+                        break
+                    collected.append(line.strip())
+                return '\n'.join(collected).strip()
+
+            test_case_id = extract_field("Test Case Id:")
+            test_case_type = extract_field("Test Case Type:")
+            test_case_name = extract_field("Test Case Name:")
+            description = extract_field("Description:")
+            precondition = extract_field("Precondition:")
+            test_steps = extract_multiline_field("Test Steps:", ["Expected Results:", "Test Data:", "####"])
+            expected_results = extract_multiline_field("Expected Results:", ["Test Data:", "####"])
+            test_data = extract_multiline_field("Test Data:", ["####"])
+
+            insert_query = """
+            INSERT INTO test_cases (
+                user_story_code, test_case_id, test_case_type, test_case_name,
+                description, precondition, test_steps, expected_results, test_data
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_story_code, test_case_id) DO NOTHING;
+            """
+
+            cur.execute(insert_query, (
+                user_story_code, test_case_id, test_case_type, test_case_name,
+                description, precondition, test_steps, expected_results, test_data
+            ))
+
+        conn.commit()
+
+if __name__ == "__main__":
+    # Update with your PostgreSQL connection info
+    conn = psycopg2.connect(
+        host="localhost",
+        port=5432,
+        dbname="your_db_name", //postgres
+        user="your_username", //postgres
+        password="your_password" 
+    )
+
+    txt_file_path = "User_Stories_Test_Cases.txt"  # Change if needed
+    user_story_code = "SP02-Document"  # Change as needed
+
+    create_table_if_not_exists(conn)
+    insert_test_cases_from_txt(conn, txt_file_path, user_story_code)
+
+    print("Test cases inserted successfully.")
+    conn.close()
