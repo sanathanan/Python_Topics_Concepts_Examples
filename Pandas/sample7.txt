@@ -1,0 +1,104 @@
+# Required: langchain, openai, pytest
+import os
+import tempfile
+import subprocess
+from langchain.chat_models import ChatOpenAI
+from langchain.schema import SystemMessage, HumanMessage
+
+# === CONFIGURATION ===
+llm = ChatOpenAI(temperature=0, model_name="gpt-4", openai_api_key=os.getenv("OPENAI_API_KEY"))
+
+# === AGENT 1: TestCaseParserAgent ===
+class TestCaseParserAgent:
+    @staticmethod
+    def parse(raw_text):
+        prompt = f"""
+        Extract structured JSON test cases from the following user story document:
+
+        {raw_text}
+
+        Format:
+        [
+          {{
+            "id": "TC001",
+            "name": "...",
+            "steps": ["step 1", "step 2", ...],
+            "expected": "expected result"
+          }}
+        ]
+        """
+        messages = [HumanMessage(content=prompt)]
+        response = llm(messages)
+        return eval(response.content)
+
+# === AGENT 2: CodeGeneratorAgent ===
+class CodeGeneratorAgent:
+    @staticmethod
+    def generate(test_case):
+        prompt = f"""
+        Write a Python pytest function to test the following case:
+
+        Test Case ID: {test_case['id']}
+        Name: {test_case['name']}
+        Steps:
+        {'\n'.join(test_case['steps'])}
+        Expected: {test_case['expected']}
+
+        Use requests library if it's an API or pseudocode if UI.
+        """
+        messages = [HumanMessage(content=prompt)]
+        response = llm(messages)
+        return response.content
+
+# === AGENT 3: CodeExecutorAgent ===
+class CodeExecutorAgent:
+    @staticmethod
+    def execute(code_str):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = os.path.join(tmpdir, "test_case.py")
+            with open(test_file, "w") as f:
+                f.write(code_str)
+            result = subprocess.run(["pytest", test_file, "-v", "--tb=short"], capture_output=True, text=True)
+            return result.stdout
+
+# === AGENT 4: FeedbackAgent ===
+class FeedbackAgent:
+    @staticmethod
+    def analyze(test_case, code_str, test_result):
+        prompt = f"""
+        Analyze the test result and suggest improvements or fixes.
+        Test Case: {test_case}
+        Code:
+        {code_str}
+        Result:
+        {test_result}
+        """
+        messages = [HumanMessage(content=prompt)]
+        response = llm(messages)
+        return response.content
+
+# === MAIN ORCHESTRATION ===
+class AgenticTestRunner:
+    @staticmethod
+    def run(raw_text):
+        structured = TestCaseParserAgent.parse(raw_text)
+        for tc in structured:
+            print(f"\n--- Test Case: {tc['id']} - {tc['name']} ---")
+            code = CodeGeneratorAgent.generate(tc)
+            print("\nGenerated Code:\n", code)
+            result = CodeExecutorAgent.execute(code)
+            print("\nExecution Result:\n", result)
+            feedback = FeedbackAgent.analyze(tc, code, result)
+            print("\nFeedback:\n", feedback)
+
+# === ENTRY POINT ===
+if __name__ == "__main__":
+    with open("User_Stories_Test_Cases.txt", "r") as file:
+        raw_test_cases = file.read()
+    AgenticTestRunner.run(raw_test_cases)
+
+
+
+langchain>=0.1.0
+openai>=1.0.0
+pytest>=7.0.0
