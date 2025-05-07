@@ -1,97 +1,649 @@
-import psycopg2
 import os
+import sys
+from Preparator import TestCasePreparator
+from TCGenerator import Generator
+from FunctionExctrator import FunctionProcessor
+from TestCaseExtrator import TestCaseProcessor
+from TextUtility import TextUtility
+from JiraDocumentReader import get_document_content,extract_text_from_docx
+from Userstory import extract_story_key,get_story_content
 
-def create_table_if_not_exists(conn):
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS test_cases (
-        user_story_code VARCHAR(50) NOT NULL,
-        test_case_id VARCHAR(20) NOT NULL,
-        test_case_type VARCHAR(20),
-        test_case_name TEXT,
-        description TEXT,
-        precondition TEXT,
-        test_steps TEXT,
-        expected_results TEXT,
-        test_data TEXT,
-        PRIMARY KEY (user_story_code, test_case_id)
-    );
-    """
-    with conn.cursor() as cur:
-        cur.execute(create_table_query)
-        conn.commit()
 
-def insert_test_cases_from_txt(conn, txt_file_path, user_story_code):
-    with open(txt_file_path, 'r', encoding='utf-8') as file:
-        content = file.read()
+class TestCaseGeneratorAgent():
+    def __init__(self):
+        pass
 
-    test_cases = content.split("####")
+    def processResult(self, results):
+        processedData = ""
+        for result in results:
+            processedData += result
+            
+        return processedData
 
-    with conn.cursor() as cur:
-        for test_case in test_cases:
-            lines = test_case.strip().split('\n')
-            if not lines or not lines[0].startswith("Test Case Id:"):
-                continue
+    
+    # def prepareDataToDisplay(self, testCases):
+    #     message = ''
+    #     tc_counter = 1
 
-            def extract_field(field_name):
-                for line in lines:
-                    if line.startswith(field_name):
-                        return line.replace(field_name, '').strip()
-                return ''
+    #     for tc in testCases:
+    #         tc_id = getattr(tc, 'tcId', f"TC{tc_counter:03d}")
+    #         message += f"TestCase ID: {tc_id}\n"
+    #         message += f"Test Case Type: {tc.tcType}\n"
+    #         message += f"TestCase Name:  {tc.tcName}\n"
+    #         message += f"Description: {tc.tcDescription}\n"
+    #         message += f"Precondition: {tc.tcPreconditions}\n"
+    #         message += f"Test Steps:\n"
+    #         for i, step in enumerate(tc.tcSteps, start=1):
+    #             message += f"{i}. {step.stepDesc}\n"
 
-            def extract_multiline_field(start_label, stop_labels):
-                start_index = -1
-                for i, line in enumerate(lines):
-                    if line.startswith(start_label):
-                        start_index = i + 1
-                        break
-                if start_index == -1:
-                    return ''
-                collected = []
-                for line in lines[start_index:]:
-                    if any(line.startswith(lbl) for lbl in stop_labels):
-                        break
-                    collected.append(line.strip())
-                return '\n'.join(collected).strip()
+    #         message += f"Expected Results:\n"
+    #         for i, results in enumerate(tc.tcExpectedResults, start=1):
+    #             message += f"{i}. {results.expResultDesc}\n"
 
-            test_case_id = extract_field("Test Case Id:")
-            test_case_type = extract_field("Test Case Type:")
-            test_case_name = extract_field("Test Case Name:")
-            description = extract_field("Description:")
-            precondition = extract_field("Precondition:")
-            test_steps = extract_multiline_field("Test Steps:", ["Expected Results:", "Test Data:", "####"])
-            expected_results = extract_multiline_field("Expected Results:", ["Test Data:", "####"])
-            test_data = extract_multiline_field("Test Data:", ["####"])
+    #         message += f"Test Data:\n"
+    #         for i, data in enumerate(tc.tcTestData, start=1):
+    #             message += f"{i}. {data.testDataValue}\n"
 
-            insert_query = """
-            INSERT INTO test_cases (
-                user_story_code, test_case_id, test_case_type, test_case_name,
-                description, precondition, test_steps, expected_results, test_data
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_story_code, test_case_id) DO NOTHING;
-            """
+    #         message += f"####\n"
 
-            cur.execute(insert_query, (
-                user_story_code, test_case_id, test_case_type, test_case_name,
-                description, precondition, test_steps, expected_results, test_data
-            ))
+    #         tc_counter += 1
+        
+    #     return message
 
-        conn.commit()
+    def prepareDataToDisplay(self, testCases):
+        message = ''
+        for tc in testCases:
+            message += f"TestCase ID: {tc.tcId}\n"
+            message += f"Test Case Type: {tc.tcType}\n"
+            message += f"TestCase Name:  {tc.tcName}\n"
+            message += f"Description: {tc.tcDescription}\n"
+            message += f"Precondition: {tc.tcPreconditions}\n"
+            message += f"Test Steps:\n"
+            for i, step in enumerate(tc.tcSteps, start=1):
+                message += f"{i}. {step.stepDesc}\n"
 
+            message += f"Expected Results:\n"
+            for i, results in enumerate(tc.tcExpectedResults, start=1):
+                message += f"{i}. {results.expResultDesc}\n"
+
+            message += f"Test Data:\n"
+            for i, data in enumerate(tc.tcTestData, start=1):
+                message += f"{i}. {data.testDataValue}\n"
+
+            message += f"####\n"
+        
+        return message
+
+
+
+    def saving_Ouput(self, message):
+        os.makedirs("output", exist_ok=True)
+        with open('output/output.txt', 'a') as f:
+            f.write(message)   
+    
+    # def main(self):
+    #     prompt = None
+    #     file = None
+    #     username = None
+    #     api_token = None
+    #     url = None
+    #     chunk_size = 2048
+        
+    #     if(len(sys.argv) == 5):
+    #         prompt = sys.argv[1]
+    #         file = sys.argv[2]
+    #         username = sys.argv[3]
+    #         api_token = sys.argv[4]
+
+    #     else:
+    #         print("Prompt or File attachment missing")
+    #         sys.exit(1)
+        
+    #     prep = TestCasePreparator(chunk_size)
+    #     auth_data = {'username':username, 'api_token':api_token}
+        
+    #     # Read the content of JIRA requirement document
+    #     text_content = get_document_content(file, auth_data)
+    #     # Extract the Text from the document
+    #     text = extract_text_from_docx(text_content)
+    #     print("Text Starts:", text)
+    #     print("Text Ends:", text)
+
+    #     # Creating the 'Output' folder and storing the test case in the 'output.txt' file
+    #     os.makedirs("output", exist_ok=True)
+    #     with open('output/output.txt', 'w') as f:
+    #         f.write("")
+        
+    #     full_message = ""
+
+    #     # Converting bigger text into smaller units called chunks
+    #     chunks = prep.prepareChunk(text)
+    #     print("Chunks", chunks)
+
+    #     # Prepare Generate object for Test Cases generation
+    #     generator = Generator(prompt, chunks)
+    #     # Generate Test Cases in the form of list
+    #     results = generator.generateTC()
+    #     print("LLM Response:", results)  # Debugging: Print LLM response
+        
+    #     # Convert the list into string
+    #     response = self.processResult(results)   
+    #     print("Processed Response:", response)  # Debugging: Print processed response
+        
+    #     tcExtractor = TestCaseProcessor(response)
+    #     # Extract all Test Cases
+    #     test_Cases = tcExtractor.extract_test_cases()
+    #     # Beautify the Test Cases removing unwanted characters
+    #     formated_TestCase = tcExtractor.format_test_case(test_Cases)
+
+    #     print("Formatted Test Case:", formated_TestCase)
+
+    #     # Prepare the Test Cases to display
+    #     message = self.prepareDataToDisplay(formated_TestCase)
+    #     full_message += message
+
+    #     self.saving_Ouput(full_message)
+
+    #     print("Output:", message)
+
+    def main(self):
+        prompt = None
+        file = None
+        username = None
+        api_token = None
+        url = None
+        chunk_size = 2048
+        
+        if(len(sys.argv) == 5):
+            prompt = sys.argv[1]
+            file = sys.argv[2]
+            username = sys.argv[3]
+            api_token = sys.argv[4]
+
+        else:
+            print("Prompt or File attachment missing")
+            sys.exit(1)
+        
+        prep = TestCasePreparator(chunk_size)
+        auth_data = {'username':username, 'api_token':api_token}
+        
+        # Read the content of JIRA requirement document
+        text_content = get_document_content(file, auth_data)
+        # Extract the Text from the document
+        text = extract_text_from_docx(text_content)
+        print("Text Starts:", text)
+        print("Text Ends:", text)
+
+        # Splitting the text based on 'User Story'
+        user_stories = text.split("User Story")
+        user_stories = ["User Story" + s.strip() for s in user_stories if s.strip()]
+        print(user_stories)
+
+        # Creating the 'Output' folder and storing the test case in the 'output.txt' file
+        os.makedirs("output", exist_ok=True)
+        with open('output/output.txt', 'w') as f:
+            f.write("")
+        
+        full_message = ""
+
+        for story_index, story_text in enumerate(user_stories):
+
+            # Converting bigger text into smaller units called chunks
+            chunks = prep.prepareChunk(text)
+            print("Chunks", chunks)
+
+            # Prepare Generate object for Test Cases generation
+            generator = Generator(prompt, chunks)
+            # Generate Test Cases in the form of list
+            results = generator.generateTC()
+            print("LLM Response:", results)  # Debugging: Print LLM response
+            
+            # Convert the list into string
+            response = self.processResult(results)   
+            print("Processed Response:", response)  # Debugging: Print processed response
+            
+            tcExtractor = TestCaseProcessor(response)
+            # Extract all Test Cases
+            test_Cases = tcExtractor.extract_test_cases()
+            # Beautify the Test Cases removing unwanted characters
+            formated_TestCase = tcExtractor.format_test_case(test_Cases)
+
+            print("Formatted Test Case:", formated_TestCase)
+
+            # Prepare the Test Cases to display
+            message = self.prepareDataToDisplay(formated_TestCase)
+            full_message += message
+
+        self.saving_Ouput(full_message)
+
+        print("Output:", full_message)
+    
+  
 if __name__ == "__main__":
-    # Update with your PostgreSQL connection info
-    conn = psycopg2.connect(
-        host="localhost",
-        port=5432,
-        dbname="your_db_name", //postgres
-        user="your_username", //postgres
-        password="your_password" 
-    )
+    test_Case_Generator_Agent = TestCaseGeneratorAgent()
+    test_Case_Generator_Agent.main()
 
-    txt_file_path = "User_Stories_Test_Cases.txt"  # Change if needed
-    user_story_code = "SP02-Document"  # Change as needed
 
-    create_table_if_not_exists(conn)
-    insert_test_cases_from_txt(conn, txt_file_path, user_story_code)
+---------------------------------------------------------------
+import re
+from Step import Step
+from TestData import TestData
+from ExpetedResult import ExpectedResult
+from TestCase import TestCase
+from TextUtility import TextUtility
 
-    print("Test cases inserted successfully.")
-    conn.close()
+class TestCaseProcessor:
+    
+    def __init__(self,text ):
+        self.testCases = []
+        self.text = text
+        
+
+    def extract_test_cases(self):
+        test_case_pattern = re.compile(
+            r'#### Test Case (\d+)\n\n\*\*Test Case Id:\*\*\s*(.*?)\s*\*\*Test Case Name:\*\*\s*(.*?)\s*\*\*Description:\*\*\s*(.*?)\s*\*\*Precondition:\*\*\s*(.*?)\s*\*\*Steps:\*\*\s*(.*?)\s*\*\*Expected Results:\*\*\s*(.*?)\s*\*\*Test Data:\*\*\s*(.*?)\s*(?=\*\*Test Case Id:\*\*|$)',
+            re.DOTALL
+        )
+        matches = test_case_pattern.findall(self.text)
+        print("Extracted Test Cases:", matches)  # Debugging: Print extracted test cases
+        return matches
+               
+    def format_test_case(self, test_case, start_tc_id=1):
+        util = TextUtility()
+        tc_counter = start_tc_id
+        for tc in test_case:
+            testCase = TestCase()
+            testSteps = []
+            testDatas = []
+            testExpectedResults = []
+            
+            testCase.tcId = f"TC{tc_counter:03d}"
+            testCase.tcType = util.beautifyLine(tc[1])
+            testCase.tcName = util.beautifyLine(tc[2])
+            testCase.tcDescription = util.beautifyLine(tc[3])
+            testCase.tcPreconditions = util.beautifyLine(tc[4])
+
+            steps = tc[5].split('\n')
+            for step in steps:
+                tcStep = Step()
+                step_line = util.beautifyLine(step)
+                if util.is_not_blank(step_line):
+                    step_line = util.remove_Leading_Trailing_Space(step_line)
+                    if util.starts_with_digit(step_line) and util.check_digit_followed_by_dot(step_line):
+                        number, text = step_line.split('. ', 1)
+                        tcStep.stepId = number
+                        tcStep.stepDesc = text
+                        testSteps.append(tcStep)
+            
+            testCase.tcSteps = testSteps
+
+            for result in tc[6].split('\n'):
+                tcExpectedResult = ExpectedResult()
+                result_line = util.beautifyLine(result)
+                if util.is_not_blank(result_line):
+                    result_line = util.remove_Leading_Trailing_Space(result_line)
+                    if util.starts_with_digit(result_line) and util.check_digit_followed_by_dot(result_line):
+                        number, text = result_line.split('. ', 1)
+                        tcExpectedResult.expResultId = number
+                        tcExpectedResult.expResultDesc = text
+                        testExpectedResults.append(tcExpectedResult)
+
+            testCase.tcExpectedResults = testExpectedResults
+
+            for data in tc[7].split('\n'):
+                testData = TestData()
+                data_line = util.beautifyLine(data)
+                if util.is_not_blank(data_line):
+                    data_line = util.remove_Leading_Trailing_Space(data_line)
+                    if util.starts_with_digit(data_line) and util.check_digit_followed_by_dot(data_line):
+                        number, text = data_line.split('. ', 1)
+                        testData.testDataId = number
+                        testData.testDataValue = text
+                        testDatas.append(testData)
+
+            testCase.tcTestData = testDatas
+            self.testCases.append(testCase)
+            tc_counter += 1
+        print("Formatted Test Cases:", self.testCases)  # Debugging: Print formatted test cases
+        return self.testCases
+
+
+
+-------------------------------------------------------------------------------------------------
+import os
+from openai import AzureOpenAI
+import numpy as np
+import faiss
+import pickle
+
+class Generator:
+
+    def __init__(self, prompt, chunks):
+        """
+        Setting up Azure Open AI client from environmental variables
+        Loading or Initializing the FAISS idex by 'load_faiss()'
+        'self.index' is the variable used to store the FAISS index
+        'self.data_file' is used to store the chunks of data which will be converted from text to vectors
+        """
+        self.prompt = prompt
+        self.chunks = chunks
+        self.results = []
+        self.index_file = "vector_Database/faiss_index.bin"
+        self.data_file = "vector_Database/text_chunks.pkl"
+
+        self.client= AzureOpenAI(
+            api_version = os.getenv("AZURE_API_VERSION"),
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key = os.getenv("AZURE_OPENAI_API_KEY"),
+        )
+
+        self.deploymentOrModelId = os.getenv("AZURE_TEST_MODEL")
+        self.deployment_Embedding_Model_Name = os.getenv("AZURE_EMBEDDING_MODEL")
+
+        self.load_faiss()
+
+
+    def load_faiss(self):
+        """
+        Checks if a stored 'faiss_index.bin' and 'text_chunks.pkl' file is exist or not.
+        If exists, then it will store them from memory
+        If not exists, initializing the FAISS index for 3072 dimensional vector.
+        3072 dimensional vector is required by 'text-embedding-3-large' (embedding model)
+        """
+        if os.path.exists(self.index_file) and os.path.exists(self.data_file):
+            self.index = faiss.read_index(self.index_file)
+            with open(self.data_file, "rb") as f:
+                self.stored_texts = pickle.load(f)
+        else:
+            self.index = faiss.IndexFlatL2(3072)
+            self.stored_texts=[]
+
+    
+    def save_faiss(self):
+        """
+        saves the index of the embedding vector in 'faiss_index.bin'
+        saves the chunks converted to embedding vectors in the 'text_chunks.pkl'
+        """
+        faiss.write_index(self.index, self.index_file)
+        with open(self.data_file, "wb") as f:
+            pickle.dump(self.stored_texts, f)
+
+    def get_embedding(self, text):
+        """
+        This function will take the input chunks and convert it to 3072 dimensional vectors 
+        using embedding model 'text-embedding-3-large'
+        It will returns it as a Numpy Float32 array
+        """
+        response = self.client.embeddings.create(input=[text],
+                                                 model = self.deployment_Embedding_Model_Name)
+        
+        embedding_Response = np.array(response.data[0].embedding, dtype=np.float32)
+
+        return embedding_Response
+
+    def store_chunk(self, chunk):
+        """
+        This function will get the embedding vectors from 'get_embedding()'
+        It will store the index of the embedding into 'self.index' i.e(faiss.index.bin)
+        It will store the 3072 embedding vectors into 'self.stored_texts' i.e(text_chunks.pkl)
+        """
+        embedding = self.get_embedding(chunk)
+        embedding = np.array([embedding], dtype=np.float32)
+        self.index.add(embedding)
+        self.stored_texts.append(chunk)
+        self.save_faiss()
+
+
+    def get_similar_chunks(self, query_Text, top_K=3):
+        """
+        This function convert the chunks into 3072 dimensional embedded vectors.
+        It will search the index of the embedded vectors in 'self.index' i.e(faiss.index.bin)
+        Based on the index, it will get the appropriate vectors from the 'self.stored_texts' 
+        i.e(text_chunks.pkl)
+        """
+        if self.index.ntotal == 0:
+            return ""
+        
+        embedding = self.get_embedding(query_Text)
+        distances, index = self.index.search(np.array([embedding]), top_K)
+
+        vaild_index = [i for i in index[0] if i < len(self.stored_texts)]
+
+        result =  "\n".join([self.stored_texts[i] for i in vaild_index])
+
+        return result
+    
+    def analyze_with_llm(self, text):
+        """
+        Based on the user text, it will retrieve the top 3 records from the 
+        'self.stored_text' i.e(text_chunks.pkl)
+        The 'retrived_text' + prompt + new user query will sent to llm and will genetate response
+        """
+        similar_chunks = self.get_similar_chunks(text)
+
+        prompt = f"""
+        {self.prompt}
+
+        Here are some similar past user stories for your reference:
+        {similar_chunks}
+
+        Now based on the above rerences and new user story below, generate both POSITIVE and NEGATIVE test cases in the required format.
+        {{
+        {text}
+        }}
+        """
+
+        messages = [{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            model=self.deploymentOrModelId,
+            messages=messages,
+            temperature=0,
+        )
+        return response.choices[0].message.content
+
+    def generateTC(self):
+        for idx, chunk in enumerate(self.chunks):
+            tc_id_counter = 1
+            result = self.analyze_with_llm(chunk)
+            self.results.append(result)
+            self.store_chunk(chunk)
+
+            formatted_result = self.format_test_case(result, tc_id_counter)
+
+            self.results.append(formatted_result)
+            
+        return self.results
+
+    # def generateTC(self):
+    #     for chunk in self.chunks:
+    #         result = self.analyze_with_llm(chunk)
+    #         self.results.append(result)
+            
+    #     print("LLM_Response:", self.results)
+    #     return self.results
+    
+    def format_test_case(self, result, tc_id_counter):
+        test_case_ouput = ""
+
+        for case in result.split('\n'):
+            if 'TestCase' in case:
+                tc_id = f"TC{str(tc_id_counter).zfill(3)}"
+                test_case_ouput += f"{tc_id}\n"
+
+                test_case_ouput += f"{case}\n"
+
+                tc_id_counter += 1
+
+        return test_case_ouput
+
+----------------------------------------------------------------------------------------------------
+LLM response which i am getting like below two types. For one i am getting #### Positive Test Cases and #### Negative Test Cases
+
+### User Story 2: Basic Credit Management (BD6) - Set Credit Limit
+
+#### Positive Test Cases
+
+**Test Case Id:** TC001
+**Test Case Name:** Set Credit Limit for Customer
+**Description:** Verify that the user can set a credit limit for a customer.
+**Precondition:** User is logged into the SAP Fiori launchpad and has access to Basic Credit Management.
+**Steps:**
+1. Navigate to the Basic Credit Management module.
+   **Expected result:** Basic Credit Management module is displayed.
+   **Test Data:** User credentials with access to Basic Credit Management.
+2. Select the customer for whom the credit limit needs to be set.
+   **Expected result:** Customer is selected.
+   **Test Data:** Valid customer ID (e.g., CUST123).
+3. Enter the credit limit amount.
+   **Expected result:** Credit limit amount is entered.
+   **Test Data:** Valid credit limit amount (e.g., 50000).
+4. Save the changes.
+   **Expected result:** Credit limit is set for the customer.
+   **Test Data:** None.
+
+#### Negative Test Cases
+
+**Test Case Id:** TC002
+**Test Case Name:** Set Credit Limit with Invalid Amount
+**Description:** Verify that the system handles invalid credit limit amounts appropriately.
+**Precondition:** User is logged into the SAP Fiori launchpad and has access to Basic Credit Management.
+**Steps:**
+1. Navigate to the Basic Credit Management module.
+   **Expected result:** Basic Credit Management module is displayed.
+   **Test Data:** User credentials with access to Basic Credit Management.
+2. Select the customer for whom the credit limit needs to be set.
+   **Expected result:** Customer is selected.
+   **Test Data:** Valid customer ID (e.g., CUST123).
+3. Enter an invalid credit limit amount.
+   **Expected result:** Invalid credit limit amount is entered.
+   **Test Data:** Invalid credit limit amount (e.g., -50000).
+4. Save the changes.
+   **Expected result:** Error message is displayed, and credit limit is not set.
+   **Test Data:** None.
+
+**Test Case Id:** TC003
+**Test Case Name:** Set Credit Limit for Non-existent Customer
+**Description:** Verify that the system handles non-existent customer IDs appropriately.
+**Precondition:** User is logged into the SAP Fiori launchpad and has access to Basic Credit Management.
+**Steps:**
+1. Navigate to the Basic Credit Management module.
+   **Expected result:** Basic Credit Management module is displayed.
+   **Test Data:** User credentials with access to Basic Credit Management.
+2. Enter a non-existent customer ID.
+   **Expected result:** Non-existent customer ID is entered.
+   **Test Data:** Invalid customer ID (e.g., CUST999).
+3. Attempt to set a credit limit for the non-existent customer.
+   **Expected result:** Error message is displayed, and credit limit is not set.
+   **Test Data:** None.
+   
+   
+   
+Here no "#### Positive Test Cases" and "#### Negative Test Cases
+   
+### User Story: Scheduling Job for Billing Release
+
+#### Test Case 1
+
+**Test Case Id:** TC001
+**Test Case Name:** Schedule Job for Billing Release with Valid Data
+**Description:** Verify that the job for billing release can be scheduled successfully with valid data.
+**Precondition:** User must have access to the scheduling system.
+**Steps:**
+1. Navigate to the scheduling job creation page.
+   - **Expected result:** The scheduling job creation page is displayed.
+   - **Test Data:** N/A
+2. Enter valid job name, description, and schedule time.
+   - **Expected result:** The job details are accepted.
+   - **Test Data:** Job Name: "BillingReleaseJob", Description: "Job for releasing billing documents", Schedule Time: "2023-10-01 13:00:00"
+3. Click on the "Save" button.
+   - **Expected result:** The job is saved and scheduled successfully.
+   - **Test Data:** N/A
+
+#### Test Case 2
+
+**Test Case Id:** TC002
+**Test Case Name:** Schedule Job for Billing Release with Invalid Data
+**Description:** Verify that the job for billing release cannot be scheduled with invalid data.
+**Precondition:** User must have access to the scheduling system.
+**Steps:**
+1. Navigate to the scheduling job creation page.
+   - **Expected result:** The scheduling job creation page is displayed.
+   - **Test Data:** N/A
+2. Enter invalid job name (e.g., numeric string), description, and schedule time.
+   - **Expected result:** The system displays an error message indicating that the job name is invalid.
+   - **Test Data:** Job Name: "12345", Description: "Job for releasing billing documents", Schedule Time: "2023-10-01 13:00:00"      
+3. Enter valid job name but invalid schedule time (e.g., null value).
+   - **Expected result:** The system displays an error message indicating that the schedule time is required.
+   - **Test Data:** Job Name: "BillingReleaseJob", Description: "Job for releasing billing documents", Schedule Time: null
+   
+   
+-------------------------------------------------------------------------------------------
+I need based on each 'user story' it starts from TC001 to so on. and should display like below
+
+TestCase ID: TC001
+Test Case Type: Positive
+TestCase Name:  Review Sales Order with Valid Details
+Description: Verify that the Sales Manager can review a sales order with all necessary details.
+Precondition: Sales order with valid customer information, material details, and pricing exists.
+Test Steps:
+1. Log in as Sales Manager.
+2. Navigate to the Sales Order Review interface.
+3. Select a sales order containing nonstock material.
+4. Review the customer information, material details, and pricing.
+Expected Results:
+1. Sales Manager is logged in successfully.
+2. Sales Order Review interface is displayed.
+3. Sales order details are displayed.
+4. All necessary details (customer information, material details, and pricing) are visible and correct.
+Test Data:
+1. Sales Manager credentials (username: salesmanager, password: password123).
+2. N/A.
+3. Sales order ID: SO12345.
+4. Customer: John Doe, Material: Nonstock item A, Pricing: $1000.
+####
+TestCase ID: TC002
+Test Case Type: Negative
+TestCase Name:  Review Sales Order with Missing Details
+Description: Verify that the system handles sales orders with missing details appropriately.
+Precondition: Sales order with missing customer information exists.
+Test Steps:
+1. Log in as Sales Manager.
+2. Navigate to the Sales Order Review interface.
+3. Select a sales order with missing customer information.
+4. Attempt to review the sales order.
+Expected Results:
+1. Sales Manager is logged in successfully.
+2. Sales Order Review interface is displayed.
+3. Sales order details are displayed.
+4. System displays an error message indicating missing customer information.
+Test Data:
+1. Sales Manager credentials (username: salesmanager, password: password123).
+2. N/A.
+3. Sales order ID: SO12346.
+4. N/A.
+####
+TestCase ID: TC003
+Test Case Type: Positive
+TestCase Name:  Approve Sales Order
+Description: Verify that the Sales Manager can approve a sales order.
+Precondition: Sales order with valid details exists.
+Test Steps:
+1. Log in as Sales Manager.
+2. Navigate to the Sales Order Review interface.
+3. Select a sales order containing nonstock material.
+4. Click the "Approve" button.
+Expected Results:
+1. Sales Manager is logged in successfully.
+2. Sales Order Review interface is displayed.
+3. Sales order details are displayed.
+4. Sales order is approved, and a notification is sent to the Internal Sales Representative.
+Test Data:
+1. Sales Manager credentials (username: salesmanager, password: password123).
+2. N/A.
+3. Sales order ID: SO12345.
+4. N/A.
+
+
+
+    
+    
