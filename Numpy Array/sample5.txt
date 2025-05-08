@@ -107,7 +107,20 @@ def run(self):
     # assume 'self.llm_response' contains the full raw response
     formatted_output = format_test_cases_by_user_story(self.llm_response)
     self.saving_Ouput(formatted_output)
-----------------------------------------
+---------------------------------------- we can use this code and delete all other codes
+# Assuming the formatted_output comes from the format_test_cases_by_user_story function
+formatted_output = format_test_cases_by_user_story(response)
+
+# Print the formatted test cases
+print("Formatted Output:", formatted_output)
+
+# If you need to prepare or display this data, you can directly use formatted_output
+# e.g., if you have a method that prepares the data for display:
+message = self.prepareDataToDisplay(formatted_output)
+
+# Append the message if required
+full_message += message
+
 -------------------------------------------------------------------------------------------------------------
 import os
 import sys
