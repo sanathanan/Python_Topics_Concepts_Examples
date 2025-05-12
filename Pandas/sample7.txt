@@ -1,104 +1,103 @@
-# Required: langchain, openai, pytest
-import os
-import tempfile
-import subprocess
-from langchain.chat_models import ChatOpenAI
-from langchain.schema import SystemMessage, HumanMessage
+import re
+import pandas as pd
+from testrail_api import TestRailAPI
+from testrail_api._exception import StatusCodeError  # Import the exception
 
-# === CONFIGURATION ===
-llm = ChatOpenAI(temperature=0, model_name="gpt-4", openai_api_key=os.getenv("OPENAI_API_KEY"))
+def safe_search(pattern, text, group_index=1):
+    match = re.search(pattern, text, re.DOTALL)
+    return match.group(group_index) if match else ''
 
-# === AGENT 1: TestCaseParserAgent ===
-class TestCaseParserAgent:
-    @staticmethod
-    def parse(raw_text):
-        prompt = f"""
-        Extract structured JSON test cases from the following user story document:
+# Step 1: Read and parse the .txt file
+with open('output/output.txt', 'r', encoding='utf-8') as file:
+    content = file.read()
 
-        {raw_text}
+# Split individual test cases using "####"
+raw_cases = [tc.strip() for tc in content.split("####") if tc.strip()]
 
-        Format:
-        [
-          {{
-            "id": "TC001",
-            "name": "...",
-            "steps": ["step 1", "step 2", ...],
-            "expected": "expected result"
-          }}
-        ]
-        """
-        messages = [HumanMessage(content=prompt)]
-        response = llm(messages)
-        return eval(response.content)
+test_cases = []
+user_story_code = "US-1234"
 
-# === AGENT 2: CodeGeneratorAgent ===
-class CodeGeneratorAgent:
-    @staticmethod
-    def generate(test_case):
-        prompt = f"""
-        Write a Python pytest function to test the following case:
+for raw in raw_cases:
+    test_case = {}
 
-        Test Case ID: {test_case['id']}
-        Name: {test_case['name']}
-        Steps:
-        {'\n'.join(test_case['steps'])}
-        Expected: {test_case['expected']}
+    # Extract fields using regex
+    test_case["Title"] = user_story_code
+    test_case["Test Case ID"] = safe_search(r"TestCase ID:\s*(\S+)", raw)
+    test_case["Test Case Name"] = safe_search(r"TestCase Name:\s*(.*?)\s*Description:", raw)
+    test_case["Test Case Type"] = safe_search(r"Test Case Type:\s*(\S+)", raw)
+    test_case["Description"] = safe_search(r"Description:\s*(.*?)\s*Precondition:", raw)
+    test_case["Precondition"] = safe_search(r"Precondition:\s*(.*?)\s*Test Steps:", raw)
+    steps = safe_search(r"Test Steps:\s*(.*?)Expected Results:", raw)
+    expected = safe_search(r"Expected Results:\s*(.*?)Test Data:", raw)
+    data = safe_search(r"Test Data:\s*(.*)", raw)
 
-        Use requests library if it's an API or pseudocode if UI.
-        """
-        messages = [HumanMessage(content=prompt)]
-        response = llm(messages)
-        return response.content
+    # Clean and join multiline steps, expected results, and data
+    test_case["Test Steps"] = ' '.join(line.strip() for line in steps.splitlines() if line.strip())
+    test_case["Expected Results"] = ' '.join(line.strip() for line in expected.splitlines() if line.strip())
+    test_case["Test Data"] = ', '.join([l.split(':', 1)[-1].strip() for l in data.splitlines() if ':' in l])
 
-# === AGENT 3: CodeExecutorAgent ===
-class CodeExecutorAgent:
-    @staticmethod
-    def execute(code_str):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test_case.py")
-            with open(test_file, "w") as f:
-                f.write(code_str)
-            result = subprocess.run(["pytest", test_file, "-v", "--tb=short"], capture_output=True, text=True)
-            return result.stdout
+    test_cases.append(test_case)
 
-# === AGENT 4: FeedbackAgent ===
-class FeedbackAgent:
-    @staticmethod
-    def analyze(test_case, code_str, test_result):
-        prompt = f"""
-        Analyze the test result and suggest improvements or fixes.
-        Test Case: {test_case}
-        Code:
-        {code_str}
-        Result:
-        {test_result}
-        """
-        messages = [HumanMessage(content=prompt)]
-        response = llm(messages)
-        return response.content
+# Step 2: Write to Excel
+df = pd.DataFrame(test_cases)
+excel_filename = "output/parsed_test_cases.xlsx"
+df.to_excel(excel_filename, index=False)
+print(f"Excel file created: {excel_filename}")
 
-# === MAIN ORCHESTRATION ===
-class AgenticTestRunner:
-    @staticmethod
-    def run(raw_text):
-        structured = TestCaseParserAgent.parse(raw_text)
-        for tc in structured:
-            print(f"\n--- Test Case: {tc['id']} - {tc['name']} ---")
-            code = CodeGeneratorAgent.generate(tc)
-            print("\nGenerated Code:\n", code)
-            result = CodeExecutorAgent.execute(code)
-            print("\nExecution Result:\n", result)
-            feedback = FeedbackAgent.analyze(tc, code, result)
-            print("\nFeedback:\n", feedback)
+# Step 3: Retrieve sections to verify section IDs
+testrail_url = 'https://yourcompany.testrail.io'
+testrail_email = 'your-email@example.com'
+testrail_api_key = 'your-api-key'
+testrail_project_id = 3  # e.g., project ID where these test cases belong
 
-# === ENTRY POINT ===
-if __name__ == "__main__":
-    with open("User_Stories_Test_Cases.txt", "r") as file:
-        raw_test_cases = file.read()
-    AgenticTestRunner.run(raw_test_cases)
+client = TestRailAPI(testrail_url, testrail_email, testrail_api_key)
+
+sections_response = client.sections.get_sections(testrail_project_id)
+sections = sections_response['sections']  # Access the 'sections' key
+print("Available sections:")
+for section in sections:
+    print(f"ID: {section['id']}, Name: {section['name']}")
+
+# Step 4: Create test cases in TestRail
+testrail_suite_id = 1  # e.g., suite ID where these test cases belong
+testrail_section_id = 22  # Use the correct section ID from the output
+
+for tc in test_cases:
+    if not tc['Test Case ID'] or not tc['Test Case Name']:
+        print(f"Skipping test case due to missing ID or Name: {tc}")
+        continue
+
+    title = str(f"{tc['Test Case ID']} - {tc['Test Case Name']}")
+    print(f"Creating test case with title: {title}")  # Debugging: Print the title to verify
+
+    case_data = {
+        'title': "Sample Ouput",
+        'type_id': 1,  # Adjust based on your TestRail setup
+        'priority_id': 2,  # Adjust based on your TestRail setup
+        'estimate': '1m',  # Adjust based on your TestRail setup
+        'refs': user_story_code,
+        'custom_preconds': tc['Precondition'],
+        'custom_steps': tc['Test Steps'],
+        'custom_expected': tc['Expected Results'],
+        'custom_test_data': tc['Test Data'],
+        'custom_description': tc['Description']
+    }
+
+    try:
+        response = client.cases.add_case(testrail_section_id, case_data)
+        print(f"Created test case: {response['id']}")
+    except StatusCodeError as e:
+        print(f"Failed to create test case: {e}")
+        print(f"Error message: {e}")
 
 
-
-langchain>=0.1.0
-openai>=1.0.0
-pytest>=7.0.0
+----------------
+Error message: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid string."}')      
+Creating test case with title: TC009 - Save Billing Document with Incomplete Information
+Failed to create test case: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid string."}')
+Error message: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid string."}')      
+Error message: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid string."}')      
+Creating test case with title: TC009 - Save Billing Document with Incomplete Information
+Failed to create test case: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid striCreating test case with title: TC009 - Save Billing Document with Incomplete Information
+Failed to create test case: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid striFailed to create test case: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid string."}')
+Error message: (400, 'Bad Request', 'https://sample.testrail.io/index.php?/api/v2/add_case/22', b'{"error":"Field :title is not a valid string."}')   
