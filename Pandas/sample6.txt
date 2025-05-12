@@ -1,1 +1,120 @@
 
+import os
+import numpy as np
+import faiss
+import pickle
+from openai import AzureOpenAI
+
+class Generator:
+    def __init__(self, prompt, chunks):
+        self.prompt = prompt
+        self.chunks = chunks
+        self.results = []
+
+        self.index_file = "vector_Database/faiss_index.bin"
+        self.data_file = "vector_Database/text_chunks.pkl"
+        self.output_map_file = "vector_Database/chunk_to_output.pkl"
+
+        self.client = AzureOpenAI(
+            api_version=os.getenv("AZURE_API_VERSION"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        )
+
+        self.deployment_model = os.getenv("AZURE_TEST_MODEL")
+        self.embedding_model = os.getenv("AZURE_EMBEDDING_MODEL")
+
+        self.load_faiss()
+
+    def load_faiss(self):
+        if os.path.exists(self.index_file) and os.path.exists(self.data_file):
+            self.index = faiss.read_index(self.index_file)
+            with open(self.data_file, "rb") as f:
+                self.stored_texts = pickle.load(f)
+        else:
+            self.index = faiss.IndexFlatL2(3072)
+            self.stored_texts = []
+
+        if os.path.exists(self.output_map_file):
+            with open(self.output_map_file, "rb") as f:
+                self.chunk_to_output = pickle.load(f)
+        else:
+            self.chunk_to_output = {}
+
+    def save_faiss(self):
+        faiss.write_index(self.index, self.index_file)
+        with open(self.data_file, "wb") as f:
+            pickle.dump(self.stored_texts, f)
+        with open(self.output_map_file, "wb") as f:
+            pickle.dump(self.chunk_to_output, f)
+
+    def get_embedding(self, text):
+        response = self.client.embeddings.create(
+            input=[text],
+            model=self.embedding_model
+        )
+        return np.array(response.data[0].embedding, dtype=np.float32)
+
+    def store_chunk(self, chunk, output):
+        embedding = self.get_embedding(chunk)
+        self.index.add(np.array([embedding], dtype=np.float32))
+        self.stored_texts.append(chunk)
+        self.chunk_to_output[chunk] = output
+        self.save_faiss()
+
+    def get_similar_chunks(self, query_text, top_k=3):
+        if self.index.ntotal == 0:
+            return ""
+        embedding = self.get_embedding(query_text)
+        distances, indices = self.index.search(np.array([embedding]), top_k)
+        valid_indices = [i for i in indices[0] if i < len(self.stored_texts)]
+        return "\n".join([self.stored_texts[i] for i in valid_indices])
+
+    def similarity_score(self, text1, text2):
+        emb1 = self.get_embedding(text1)
+        emb2 = self.get_embedding(text2)
+        return np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
+
+    def analyze_with_llm(self, text):
+        for chunk in self.stored_texts:
+            if self.similarity_score(text, chunk) > 0.95:
+                return self.chunk_to_output[chunk]
+
+        similar_chunks = self.get_similar_chunks(text)
+
+        prompt = f"""
+{self.prompt}
+
+Here are some similar past user stories for your reference:
+{similar_chunks}
+
+Now based on the above references and new user story below, generate both POSITIVE and NEGATIVE test cases in the required format.
+{{ 
+{text} 
+}}
+"""
+        messages = [{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            model=self.deployment_model,
+            messages=messages,
+            temperature=0,
+        )
+        result = response.choices[0].message.content
+        self.store_chunk(text, result)
+        return result
+
+    def format_test_case(self, result, tc_id_counter):
+        test_case_output = ""
+        for line in result.split('\n'):
+            if 'TestCase' in line:
+                tc_id = f"TC{str(tc_id_counter).zfill(3)}"
+                test_case_output += f"{tc_id}\n{line}\n"
+                tc_id_counter += 1
+        return test_case_output
+
+    def generateTC(self):
+        for idx, chunk in enumerate(self.chunks):
+            result = self.analyze_with_llm(chunk)
+            formatted_result = self.format_test_case(result, tc_id_counter=1)
+            self.results.append(formatted_result)
+        return self.results
