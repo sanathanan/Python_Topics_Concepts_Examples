@@ -1,103 +1,399 @@
-# Required: openai>=1.0.0, pytest
-import openai
 import os
-import tempfile
-import subprocess
+import sys
+from Preparator import TestCasePreparator
+from TCGenerator import Generator
+from FunctionExctrator import FunctionProcessor
+from TestCaseExtrator import TestCaseProcessor
+from TextUtility import TextUtility
+from Userstory import extract_story_key,get_story_content
+from test_Case_DB import Test_Case_DB_Storage
 
-# === CONFIGURATION ===
-openai.api_key = os.getenv("OPENAI_API_KEY")
+class TestCaseGeneratorAgent():
+    def __init__(self):
+        pass
 
-# === AGENT 1: TestCaseParserAgent ===
-class TestCaseParserAgent:
-    @staticmethod
-    def parse(raw_text):
-        prompt = f"""
-        Extract structured JSON test cases from the following user story document:
+    def processResult(self, results):
+        processedData = ""
+        for result in results:
+            processedData += result
+            
+        return processedData
+    
+    def saving_Ouput(message):
+        os.makedirs("output", exist_ok=True)
+        with open('output/output.txt', 'a') as f:
+            f.write(message)
 
-        {raw_text}
+    def prepareDataToDisplay(self, testCases):
+        message = ''
+        tc_counter = 1
 
-        Format:
-        [
-          {{
-            "id": "TC001",
-            "name": "...",
-            "steps": ["step 1", "step 2", ...],
-            "expected": "expected result"
-          }}
-        ]
-        """
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return eval(response.choices[0].message.content)
+        for tc in testCases:
+            # tc_id = f"TC{tc_counter:03d}"
+            tc_id = getattr(tc, 'tcId', f"{tc_counter:03d}")
+            message += f"TestCase ID: {tc_id}\n"
+            # message += f"TestCase ID: {tc.tcId}\n"
+            message += f"Test Case Type: {tc.tcType}\n"
+            message += f"TestCase Name:  {tc.tcName}\n"
+            message += f"Description: {tc.tcDescription}\n"
+            message += f"Precondition: {tc.tcPreconditions}\n"
+            
+            message += f"Test Steps:\n"
+            for i, step in enumerate(tc.tcSteps, start=1):
+                message += f"{i}. {step.stepDesc}\n"
 
-# === AGENT 2: CodeGeneratorAgent ===
-class CodeGeneratorAgent:
-    @staticmethod
-    def generate(test_case):
-        prompt = f"""
-        Write a Python pytest function to test the following case:
+            message += f"Expected Results:\n"
+            for i, results in enumerate(tc.tcExpectedResults, start=1):
+                message += f"{i}. {results.expResultDesc}\n"
 
-        Test Case ID: {test_case['id']}
-        Name: {test_case['name']}
-        Steps:
-        {'\n'.join(test_case['steps'])}
-        Expected: {test_case['expected']}
+            message += f"Test Data:\n"
+            for i, data in enumerate(tc.tcTestData, start=1):
+                message += f"{i}. {data.testDataValue}\n"
 
-        Use requests library if it's an API or pseudocode if UI.
-        """
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
+            message += f"####\n"
 
-# === AGENT 3: CodeExecutorAgent ===
-class CodeExecutorAgent:
-    @staticmethod
-    def execute(code_str):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = os.path.join(tmpdir, "test_case.py")
-            with open(test_file, "w") as f:
-                f.write(code_str)
-            result = subprocess.run(["pytest", test_file, "-v", "--tb=short"], capture_output=True, text=True)
-            return result.stdout
+            tc_counter += 1
 
-# === AGENT 4: FeedbackAgent ===
-class FeedbackAgent:
-    @staticmethod
-    def analyze(test_case, code_str, test_result):
-        prompt = f"""
-        Analyze the test result and suggest improvements or fixes.
-        Test Case: {test_case}
-        Code:
-        {code_str}
-        Result:
-        {test_result}
-        """
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.choices[0].message.content
+        return message
 
-# === MAIN ORCHESTRATION ===
-class AgenticTestRunner:
-    @staticmethod
-    def run(raw_text):
-        structured = TestCaseParserAgent.parse(raw_text)
-        for tc in structured:
-            print(f"\n--- Test Case: {tc['id']} - {tc['name']} ---")
-            code = CodeGeneratorAgent.generate(tc)
-            print("\nGenerated Code:\n", code)
-            result = CodeExecutorAgent.execute(code)
-            print("\nExecution Result:\n", result)
-            feedback = FeedbackAgent.analyze(tc, code, result)
-            print("\nFeedback:\n", feedback)
+    def saving_Ouput(self, message):
+        os.makedirs("output", exist_ok=True)
+        with open('output/output.txt', 'a') as f:
+            f.write(message)
+    
+    def main(self):
+        prompt = None
+        file = None
+        username = None
+        api_token = None
+        url = None
+        alm_id = None
+        chunk_size = 2048
+        
+        if(len(sys.argv) == 7):
+            prompt = sys.argv[1]
+            file = sys.argv[2]
+            url = sys.argv[3]
+            username = sys.argv[4]
+            api_token = sys.argv[5]
+            alm_id = sys.argv[6]
 
-# === ENTRY POINT ===
+        else:
+            print("Prompt or File attachment missing")
+            sys.exit(1)
+        
+        prep = TestCasePreparator(chunk_size)
+        
+        #Extract the Story Key from the file name
+        file_key = extract_story_key(file)
+
+        #Extract User Story contents from JIRA
+        text = get_story_content(file_key, url, username, api_token)
+
+        # Splitting the text based on 'User Story'
+        user_stories = text.split("User Story")
+        user_stories = ["User Story" + s.strip() for s in user_stories if s.strip()]
+        print(user_stories)
+
+        # Creating the 'Ouput' folder and storing the test case in the 'output.txt' file
+        os.makedirs("output", exist_ok=True)
+        with open('output/output.txt', 'w') as f:
+            f.write("")
+        
+        full_message = ""
+
+        for story_index, story_text in enumerate(user_stories):
+            # Converting bigger text into smaller units called chunks
+            chunks = prep.prepareChunk(story_text)
+            print("Chunks", chunks)
+
+            #Prepare Generate object for Test Cases generation
+            generator = Generator(prompt, chunks)
+            #Generate Test Cases in the form of list
+            results = generator.generateTC()
+        
+            #convert the list into string
+            response = self.processResult(results)   
+            #funcExtractor = FunctionProcessor(response)
+            #Extract all Function names
+            #function_names = funcExtractor.extract_function_names()
+        
+            tcExtractor = TestCaseProcessor(response)
+            #Extract all Test Cases
+            test_Cases = tcExtractor.extract_test_cases()
+            #beautify the Test Cases removing unwanted characters
+            formated_TestCase = tcExtractor.format_test_case(test_Cases)
+    
+            #Prepare the Test Cases to display
+            message = self.prepareDataToDisplay(formated_TestCase)
+            full_message += message
+
+        self.saving_Ouput(full_message)
+
+        print(full_message)
+
+
+        # Database connection
+        db_Storage = Test_Case_DB_Storage(file, alm_id)
+        db_Storage.db_Main()
+
+
 if __name__ == "__main__":
-    with open("User_Stories_Test_Cases.txt", "r") as file:
-        raw_test_cases = file.read()
-    AgenticTestRunner.run(raw_test_cases)
+    test_Case_Generator_Agent = TestCaseGeneratorAgent()
+    test_Case_Generator_Agent.main()
+
+---------------------------------------------------------------------------
+import os
+from openai import AzureOpenAI
+import numpy as np
+import faiss
+import pickle
+
+class Generator:
+
+    def __init__(self, prompt, chunks):
+        """
+        Setting up Azure Open AI client from environmental variables
+        Loading or Initializing the FAISS idex by 'load_faiss()'
+        'self.index' is the variable used to store the FAISS index
+        'self.data_file' is used to store the chunks of data which will be converted from text to vectors
+        """
+        self.prompt = prompt
+        self.chunks = chunks
+        self.results = []
+        self.index_file = "vector_Database/faiss_index.bin"
+        self.data_file = "vector_Database/text_chunks.pkl"
+
+        self.client= AzureOpenAI(
+            api_version = os.getenv("AZURE_API_VERSION"),
+            azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key = os.getenv("AZURE_OPENAI_API_KEY"),
+        )
+
+        self.deploymentOrModelId = os.getenv("AZURE_TEST_MODEL")
+        self.deployment_Embedding_Model_Name = os.getenv("AZURE_EMBEDDING_MODEL")
+
+        self.load_faiss()
+
+
+    def load_faiss(self):
+        """
+        Checks if a stored 'faiss_index.bin' and 'text_chunks.pkl' file is exist or not.
+        If exists, then it will store them from memory
+        If not exists, initializing the FAISS index for 3072 dimensional vector.
+        3072 dimensional vector is required by 'text-embedding-3-large' (embedding model)
+        """
+        if os.path.exists(self.index_file) and os.path.exists(self.data_file):
+            self.index = faiss.read_index(self.index_file)
+            with open(self.data_file, "rb") as f:
+                self.stored_texts = pickle.load(f)
+        else:
+            self.index = faiss.IndexFlatL2(3072)
+            self.stored_texts=[]
+
+    
+    def save_faiss(self):
+        """
+        saves the index of the embedding vector in 'faiss_index.bin'
+        saves the chunks converted to embedding vectors in the 'text_chunks.pkl'
+        """
+        faiss.write_index(self.index, self.index_file)
+        with open(self.data_file, "wb") as f:
+            pickle.dump(self.stored_texts, f)
+
+    def get_embedding(self, text):
+        """
+        This function will take the input chunks and convert it to 3072 dimensional vectors 
+        using embedding model 'text-embedding-3-large'
+        It will returns it as a Numpy Float32 array
+        """
+        response = self.client.embeddings.create(input=[text],
+                                                 model = self.deployment_Embedding_Model_Name)
+        
+        embedding_Response = np.array(response.data[0].embedding, dtype=np.float32)
+
+        return embedding_Response
+
+    def store_chunk(self, chunk):
+        """
+        This function will get the embedding vectors from 'get_embedding()'
+        It will store the index of the embedding into 'self.index' i.e(faiss.index.bin)
+        It will store the 3072 embedding vectors into 'self.stored_texts' i.e(text_chunks.pkl)
+        """
+        embedding = self.get_embedding(chunk)
+        embedding = np.array([embedding], dtype=np.float32)
+        self.index.add(embedding)
+        self.stored_texts.append(chunk)
+        self.save_faiss()
+
+
+    def get_similar_chunks(self, query_Text, top_K=3):
+        """
+        This function convert the chunks into 3072 dimensional embedded vectors.
+        It will search the index of the embedded vectors in 'self.index' i.e(faiss.index.bin)
+        Based on the index, it will get the appropriate vectors from the 'self.stored_texts' 
+        i.e(text_chunks.pkl)
+        """
+        if self.index.ntotal == 0:
+            return ""
+        
+        embedding = self.get_embedding(query_Text)
+        distances, index = self.index.search(np.array([embedding]), top_K)
+
+        vaild_index = [i for i in index[0] if i < len(self.stored_texts)]
+
+        result =  "\n".join([self.stored_texts[i] for i in vaild_index])
+
+        return result
+    
+    def analyze_with_llm(self, text):
+        """
+        Based on the user text, it will retrieve the top 3 records from the 
+        'self.stored_text' i.e(text_chunks.pkl)
+        The 'retrived_text' + prompt + new user query will sent to llm and will genetate response
+        """
+        similar_chunks = self.get_similar_chunks(text)
+
+        prompt = f"""
+        {self.prompt}
+
+        Here are some similar past user stories for your reference:
+        {similar_chunks}
+
+        Now based on the above rerences and new user story below, generate both POSITIVE and NEGATIVE test cases in the required format.
+        {{
+        {text}
+        }}
+        """
+
+        messages = [{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            model=self.deploymentOrModelId,
+            messages=messages,
+            temperature=0,
+        )
+        return response.choices[0].message.content
+
+    def generateTC(self):
+        for idx, chunk in enumerate(self.chunks):
+            tc_id_counter = 1
+            result = self.analyze_with_llm(chunk)
+            self.results.append(result)
+            self.store_chunk(chunk)
+
+            formatted_result = self.format_test_case(result, tc_id_counter)
+
+            self.results.append(formatted_result)
+
+            print("LLM Results:", self.results)
+            
+        return self.results
+    
+    def format_test_case(self, result, tc_id_counter):
+        test_case_ouput = ""
+
+        for case in result.split('\n'):
+            if 'TestCase' in case:
+                tc_id = f"TC{str(tc_id_counter).zfill(3)}"
+                test_case_ouput += f"{tc_id}\n"
+
+                test_case_ouput += f"{case}\n"
+
+                tc_id_counter += 1
+
+        return test_case_ouput
+
+    
+----------------------------------------------------------------
+import re
+from Step import Step
+from TestData import TestData
+from ExpetedResult import ExpectedResult
+from TestCase import TestCase
+from TextUtility import TextUtility
+
+class TestCaseProcessor:
+    
+    def __init__(self,text ):
+        self.testCases = []
+        self.text = text
+        
+        
+    def extract_test_cases(self):
+        test_case_pattern = re.compile(
+            r'Test Case Id:\s*(.*?)\s*Test Case Type:\s*(.*?)\s*Test Case Name:\s*(.*?)\s*Description:\s*(.*?)\s*Precondition:\s*(.*?)\s*Steps:\s*(.*?)\s*Expected result for each step:\s*(.*?)\s*Test Data for each step:\s*(.*?)\s*(?=Test Case Id:|$)',
+            re.DOTALL
+        )
+
+        # test_case_pattern = re.compile(
+        #     r'Test Case Id:\s*(.*?)\s*Test Case Name:\s*(.*?)\s*Description:\s*(.*?)\s*Precondition:\s*(.*?)\s*Steps:\s*(.*?)\s*Expected result for each step:\s*(.*?)\s*Test Data for each step:\s*(.*?)\s*(?=Test Case Id:|$)',
+        #     re.DOTALL
+        # )
+        return test_case_pattern.findall(self.text)
+    
+    def format_test_case(self,test_case):
+        util = TextUtility()
+        for tc in test_case:
+            testCase = TestCase()
+            testSteps = []
+            tesstDatas = []
+            testExpectedResults = []
+            
+            line = util.beautifyLine(tc[0])
+            testCase.tcId = line
+            line = util.beautifyLine(tc[1])
+            testCase.tcType = line
+            line = util.beautifyLine(tc[2])
+            testCase.tcName = line
+            line = util.beautifyLine(tc[3])
+            testCase.tcDescription = line
+            line = util.beautifyLine(tc[4])
+            testCase.tcPreconditions = line
+
+            steps = tc[5].split('\n')
+            for step in steps:
+                tcStep = Step()
+                step_line = util.beautifyLine(step)
+                if util.is_not_blank(step_line):
+                    step_line = util.remove_Leading_Trailing_Space(step_line)
+                    if util.starts_with_digit(step_line) and util.check_digit_followed_by_dot(step_line):
+                        number, text = step_line.split('. ', 1)
+                        tcStep.stepId = number
+                        tcStep.stepDesc = text
+                        testSteps.append(tcStep)
+            
+            testCase.tcSteps = testSteps
+
+            for result in tc[6].split('\n'):
+                tcExpectedResult = ExpectedResult()
+                result_line = util.beautifyLine(result)
+                if util.is_not_blank(result_line):
+                    result_line = util.remove_Leading_Trailing_Space(result_line)
+                    if util.starts_with_digit(result_line) and util.check_digit_followed_by_dot(result_line):
+                        number, text = result_line.split('. ', 1)
+                        tcExpectedResult.expResultId = number
+                        tcExpectedResult.expResultDesc = text
+                        testExpectedResults.append(tcExpectedResult)
+
+            testCase.tcExpectedResults = testExpectedResults
+
+            for data in tc[7].split('\n'):
+                tesstData = TestData()
+                data_line = util.beautifyLine(data)
+                if util.is_not_blank(data_line):
+                    data_line = util.remove_Leading_Trailing_Space(data_line)
+                    if util.starts_with_digit(data_line) and util.check_digit_followed_by_dot(data_line):
+                        number, text = data_line.split('. ', 1)
+                        tesstData.testDataId= number
+                        tesstData.testDataValue = text
+                        tesstDatas.append(tesstData)
+
+            testCase.tcTestData = tesstDatas
+            self.testCases.append(testCase)           
+        return self.testCases    
+               
+        ---------------------------------------------------
+
+    
+    
+
