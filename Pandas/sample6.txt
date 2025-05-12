@@ -118,3 +118,187 @@ Now based on the above references and new user story below, generate both POSITI
             formatted_result = self.format_test_case(result, tc_id_counter=1)
             self.results.append(formatted_result)
         return self.results
+
+------------------------------------------------------------------
+import os
+import pickle
+import faiss
+import numpy as np
+from openai import AzureOpenAI
+
+class DualRAGGenerator:
+    def __init__(self, prompt, chunks, prompt2=None):
+        self.prompt = prompt
+        self.prompt2 = prompt2
+        self.chunks = chunks
+        self.results = []
+
+        # DB1 - Functional
+        self.index_file1 = "vector_Database/faiss_index1.bin"
+        self.data_file1 = "vector_Database/text_chunks1.pkl"
+        self.output_map_file1 = "vector_Database/chunk_to_output1.pkl"
+
+        # DB2 - Security
+        self.index_file2 = "vector_Database/faiss_index2.bin"
+        self.data_file2 = "vector_Database/text_chunks2.pkl"
+        self.output_map_file2 = "vector_Database/chunk_to_output2.pkl"
+
+        self.client = AzureOpenAI(
+            api_version=os.getenv("AZURE_API_VERSION"),
+            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        )
+        self.deployment_model = os.getenv("AZURE_TEST_MODEL")
+        self.embedding_model = os.getenv("AZURE_EMBEDDING_MODEL")
+
+        self.load_faiss_rag1()
+        self.load_faiss_rag2()
+
+    def get_embedding(self, text):
+        response = self.client.embeddings.create(
+            model=self.embedding_model,
+            input=text
+        )
+        return np.array(response.data[0].embedding, dtype=np.float32)
+
+    def similarity_score(self, text1, text2):
+        emb1 = self.get_embedding(text1)
+        emb2 = self.get_embedding(text2)
+        return np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
+
+    def get_similar_chunks(self, query_text, index, stored_texts, top_k=3):
+        if index.ntotal == 0:
+            return ""
+        embedding = self.get_embedding(query_text)
+        distances, indices = index.search(np.array([embedding]), top_k)
+        valid_indices = [i for i in indices[0] if i < len(stored_texts)]
+        return "\n".join([stored_texts[i] for i in valid_indices])
+
+    def load_faiss_rag1(self):
+        if os.path.exists(self.index_file1) and os.path.exists(self.data_file1):
+            self.index1 = faiss.read_index(self.index_file1)
+            with open(self.data_file1, "rb") as f:
+                self.stored_texts1 = pickle.load(f)
+        else:
+            self.index1 = faiss.IndexFlatL2(3072)
+            self.stored_texts1 = []
+
+        if os.path.exists(self.output_map_file1):
+            with open(self.output_map_file1, "rb") as f:
+                self.chunk_to_output1 = pickle.load(f)
+        else:
+            self.chunk_to_output1 = {}
+
+    def load_faiss_rag2(self):
+        if os.path.exists(self.index_file2) and os.path.exists(self.data_file2):
+            self.index2 = faiss.read_index(self.index_file2)
+            with open(self.data_file2, "rb") as f:
+                self.stored_texts2 = pickle.load(f)
+        else:
+            self.index2 = faiss.IndexFlatL2(3072)
+            self.stored_texts2 = []
+
+        if os.path.exists(self.output_map_file2):
+            with open(self.output_map_file2, "rb") as f:
+                self.chunk_to_output2 = pickle.load(f)
+        else:
+            self.chunk_to_output2 = {}
+
+    def store_chunk_rag1(self, chunk, output):
+        embedding = self.get_embedding(chunk)
+        self.index1.add(np.array([embedding], dtype=np.float32))
+        self.stored_texts1.append(chunk)
+        self.chunk_to_output1[chunk] = output
+        faiss.write_index(self.index1, self.index_file1)
+        with open(self.data_file1, "wb") as f:
+            pickle.dump(self.stored_texts1, f)
+        with open(self.output_map_file1, "wb") as f:
+            pickle.dump(self.chunk_to_output1, f)
+
+    def store_chunk_rag2(self, chunk, output):
+        embedding = self.get_embedding(chunk)
+        self.index2.add(np.array([embedding], dtype=np.float32))
+        self.stored_texts2.append(chunk)
+        self.chunk_to_output2[chunk] = output
+        faiss.write_index(self.index2, self.index_file2)
+        with open(self.data_file2, "wb") as f:
+            pickle.dump(self.stored_texts2, f)
+        with open(self.output_map_file2, "wb") as f:
+            pickle.dump(self.chunk_to_output2, f)
+
+    def analyze_with_llm(self, text):
+        for chunk in self.stored_texts1:
+            if self.similarity_score(text, chunk) > 0.95:
+                return self.chunk_to_output1[chunk]
+
+        similar_chunks = self.get_similar_chunks(text, self.index1, self.stored_texts1)
+
+        prompt = f"""
+{self.prompt}
+
+Here are some similar past user stories for your reference:
+{similar_chunks}
+
+Now based on the above references and new user story below, generate both POSITIVE and NEGATIVE test cases in the required format.
+{{ 
+{text} 
+}}
+"""
+        messages = [{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            model=self.deployment_model,
+            messages=messages,
+            temperature=0,
+        )
+        result = response.choices[0].message.content
+        self.store_chunk_rag1(text, result)
+        return result
+
+    def analyze_with_llm_type2(self, text):
+        for chunk in self.stored_texts1:
+            if self.similarity_score(text, chunk) > 0.95:
+                return self.chunk_to_output1[chunk]
+
+        for chunk in self.stored_texts2:
+            if self.similarity_score(text, chunk) > 0.95:
+                return self.chunk_to_output2[chunk]
+
+        similar_chunks = self.get_similar_chunks(text, self.index2, self.stored_texts2)
+
+        prompt = f"""
+{self.prompt2}
+
+Here are some similar past user stories for your reference:
+{similar_chunks}
+
+Now based on the above references and new user story below, generate SECURITY-FOCUSED test cases in the required format.
+{{ 
+{text} 
+}}
+"""
+        messages = [{"role": "user", "content": prompt}]
+        response = self.client.chat.completions.create(
+            model=self.deployment_model,
+            messages=messages,
+            temperature=0,
+        )
+        result = response.choices[0].message.content
+        self.store_chunk_rag2(text, result)
+        return result
+
+    def format_test_case(self, result, tc_id_counter):
+        test_case_output = ""
+        for line in result.split('\n'):
+            if 'TestCase' in line:
+                tc_id = f"TC{str(tc_id_counter).zfill(3)}"
+                test_case_output += f"{tc_id}\n{line}\n"
+                tc_id_counter += 1
+        return test_case_output
+
+    def generateTC(self):
+        for idx, chunk in enumerate(self.chunks):
+            result = self.analyze_with_llm(chunk)
+            formatted_result = self.format_test_case(result, tc_id_counter=1)
+            self.results.append(formatted_result)
+        return self.results
+
