@@ -1,166 +1,140 @@
 import requests
-import re
-import io
-from urllib.parse import urlparse, parse_qs, unquote
-from PyPDF2 import PdfReader
-import docx
+from requests.auth import HTTPBasicAuth
+import mimetypes
+from io import BytesIO
+from docx import Document
+import PyPDF2
 
 class ADOConnector:
-    def __init__(self, full_url, token):
-        self.full_url = full_url
+    def __init__(self, org, project, token):
+        self.org = org
+        self.project = project
         self.token = token
-        self.org = None
-        self.project = None
-        self.work_item_id = None
+        self.base_url = f"https://dev.azure.com/{self.org}/{self.project}/_apis/wit/workitems/"
+        self.auth = HTTPBasicAuth('', self.token)
         self.api_version = "7.0"
-        self.parse_url()
-
-    def parse_url(self):
-        """
-        Parse the full ADO work item URL to extract org, project, work_item_id, api version etc.
-        """
-        parsed = urlparse(self.full_url)
-        path_parts = parsed.path.strip('/').split('/')
-        # Expect path: dev.azure.com/orgname/projectname/_apis/wit/workitems/73
-        # So org is path_parts[1], project is path_parts[2], workitems is path_parts[4], id is path_parts[5]
-
-        try:
-            dev_index = path_parts.index('_apis')
-            # org and project before _apis
-            self.org = path_parts[dev_index - 2]
-            self.project = path_parts[dev_index - 1]
-            # work item id
-            if path_parts[dev_index + 1] == 'workitems':
-                self.work_item_id = path_parts[dev_index + 2]
-        except Exception as e:
-            raise ValueError(f"URL parsing failed: {e}")
-
-        # Extract api-version if present in query
-        qs = parse_qs(parsed.query)
-        if 'api-version' in qs:
-            self.api_version = qs['api-version'][0]
 
     def get_headers(self):
         return {
-            'Authorization': f'Basic {self._encode_token()}',
-            'Content-Type': 'application/json'
+            "Accept": "application/json"
         }
 
-    def _encode_token(self):
-        import base64
-        # token should be in format ":<personal_access_token>"
-        token_str = f":{self.token}"
-        token_bytes = token_str.encode('ascii')
-        base64_bytes = base64.b64encode(token_bytes)
-        return base64_bytes.decode('ascii')
+    def get_work_item(self, wid_or_url):
+        if wid_or_url.startswith("http"):
+            url = wid_or_url
+        else:
+            url = f"{self.base_url}{wid_or_url}?$expand=relations&api-version={self.api_version}"
 
-    def get_work_item(self, id=None):
-        wid = id if id else self.work_item_id
-        url = f"https://dev.azure.com/{self.org}/{self.project}/_apis/wit/workitems/{wid}?$expand=relations&api-version={self.api_version}"
-        resp = requests.get(url, headers=self.get_headers())
+        resp = requests.get(url, headers=self.get_headers(), auth=self.auth)
         if resp.status_code != 200:
-            raise Exception(f"Failed to get work item {wid}, status: {resp.status_code}, message: {resp.text}")
+            raise Exception(f"Failed to get work item {wid_or_url}, status: {resp.status_code}, message: {resp.text}")
         return resp.json()
 
-    def get_attachment(self, url):
-        resp = requests.get(url, headers=self.get_headers())
+    def get_attachment_content(self, attachment_url):
+        # The attachment_url might be something like:
+        # https://dev.azure.com/{org}/_apis/wit/attachments/{attachmentId}?api-version=7.0
+        # We want to strip the ?api-version=7.0 before fetching raw content
+
+        clean_url = attachment_url.split("?")[0]
+
+        headers = {"Accept": "*/*"}  # Accept any content type
+        resp = requests.get(clean_url, headers=headers, auth=self.auth)
         if resp.status_code != 200:
-            raise Exception(f"Failed to get attachment {url}, status: {resp.status_code}, message: {resp.text}")
-        return resp.content, resp.headers.get('Content-Type', '')
+            raise Exception(f"Failed to download attachment from {clean_url}, status: {resp.status_code}")
 
-    def extract_text_from_pdf(self, bytes_content):
-        text = ""
-        try:
-            reader = PdfReader(io.BytesIO(bytes_content))
-            for page in reader.pages:
-                text += page.extract_text() + "\n"
-        except Exception as e:
-            print(f"PDF parsing error: {e}")
-        return text
+        content_type = resp.headers.get("Content-Type", "application/octet-stream")
+        data = resp.content
 
-    def extract_text_from_docx(self, bytes_content):
-        text = ""
-        try:
-            doc = docx.Document(io.BytesIO(bytes_content))
-            for para in doc.paragraphs:
-                text += para.text + "\n"
-        except Exception as e:
-            print(f"DOCX parsing error: {e}")
-        return text
-
-    def extract_text_from_txt(self, bytes_content):
-        try:
-            return bytes_content.decode('utf-8', errors='ignore')
-        except:
-            return ""
-
-    def extract_attachment_text(self, url):
-        content, content_type = self.get_attachment(url)
-        if 'pdf' in content_type:
-            return self.extract_text_from_pdf(content)
-        elif 'word' in content_type or url.lower().endswith('.docx'):
-            return self.extract_text_from_docx(content)
-        elif 'text' in content_type or url.lower().endswith('.txt'):
-            return self.extract_text_from_txt(content)
+        # Handle based on mime type
+        if "pdf" in content_type.lower():
+            return self._extract_text_from_pdf(data)
+        elif "word" in content_type.lower() or clean_url.endswith(".docx"):
+            return self._extract_text_from_docx(data)
+        elif "text" in content_type.lower() or clean_url.endswith(".txt"):
+            return data.decode(errors='ignore')
         else:
-            # Unsupported type - just return empty or a notice
-            print(f"Unsupported attachment content type: {content_type}")
-            return ""
+            # Unsupported attachment type
+            return f"[Unsupported attachment type: {content_type}]"
 
-    def get_all_related_work_items(self, work_item_json):
-        """
-        Recursively get all related work items (parent/children).
-        """
-        related_ids = set()
-        relations = work_item_json.get('relations', [])
+    def _extract_text_from_pdf(self, data_bytes):
+        pdf_reader = PyPDF2.PdfReader(BytesIO(data_bytes))
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() or ""
+        return text
+
+    def _extract_text_from_docx(self, data_bytes):
+        doc = Document(BytesIO(data_bytes))
+        fullText = []
+        for para in doc.paragraphs:
+            fullText.append(para.text)
+        return "\n".join(fullText)
+
+    def get_work_item_description(self, work_item_json):
+        # Description field key varies by process template. Commonly "System.Description"
+        fields = work_item_json.get("fields", {})
+        description = fields.get("System.Description", "")
+        if description:
+            return description
+        return ""
+
+    def get_related_work_items(self, work_item_json):
+        # Returns list of related work item IDs from relations
+        relations = work_item_json.get("relations", [])
+        related_ids = []
         for rel in relations:
-            rel_url = rel.get('url', '')
-            # The URL ends with work item id
-            m = re.search(r'/workitems/(\d+)', rel_url)
-            if m:
-                related_ids.add(m.group(1))
+            url = rel.get("url", "")
+            # url format: https://dev.azure.com/{org}/{project}/_apis/wit/workItems/{id}
+            if url:
+                wid = url.rstrip("/").split("/")[-1]
+                if wid.isdigit():
+                    related_ids.append(wid)
         return related_ids
 
-    def get_full_text(self):
-        """
-        Aggregate description + attachment text + related items text
-        """
-        visited = set()
-        to_visit = [self.work_item_id]
-        full_text = ""
+    def get_document_content(self, wid_or_url):
+        # 1. Get the main work item json
+        work_item = self.get_work_item(wid_or_url)
 
-        while to_visit:
-            wid = to_visit.pop()
-            if wid in visited:
-                continue
-            visited.add(wid)
+        # 2. Try to get description content
+        description = self.get_work_item_description(work_item)
+        if description:
+            return description
 
-            print(f"Processing work item {wid}")
-            item_json = self.get_work_item(wid)
+        # 3. If description empty, check attachments on this item and related items (parent/child)
+        # Get attachments from relations
+        attachment_texts = []
 
-            # Get description/content fields - common fields to try
-            fields = item_json.get('fields', {})
-            description = fields.get('System.Description', '')
-            title = fields.get('System.Title', '')
+        def collect_attachments_from_work_item(wi_json):
+            attachments = []
+            for rel in wi_json.get("relations", []):
+                if rel.get("rel") == "AttachedFile":
+                    attachments.append(rel.get("url"))
+            return attachments
 
-            full_text += f"\nTitle: {title}\n"
-            full_text += f"Description: {description}\n"
+        # Collect attachments on main item
+        attachments = collect_attachments_from_work_item(work_item)
 
-            # Attachments from relations
-            relations = item_json.get('relations', [])
-            for rel in relations:
-                if rel.get('rel') == 'AttachedFile':
-                    att_url = rel['url']
-                    try:
-                        att_text = self.extract_attachment_text(att_url)
-                        full_text += f"\nAttachment Text:\n{att_text}\n"
-                    except Exception as e:
-                        print(f"Failed to extract attachment text: {e}")
+        # Collect attachments on related items (child/parent)
+        related_ids = self.get_related_work_items(work_item)
+        for rid in related_ids:
+            try:
+                related_wi = self.get_work_item(rid)
+                attachments += collect_attachments_from_work_item(related_wi)
+            except Exception as e:
+                # skip if error
+                pass
 
-            # Add related work items to visit (parent/child)
-            related = self.get_all_related_work_items(item_json)
-            for rid in related:
-                if rid not in visited:
-                    to_visit.append(rid)
+        # Download and extract text from attachments
+        for att_url in attachments:
+            try:
+                text = self.get_attachment_content(att_url)
+                if text:
+                    attachment_texts.append(text)
+            except Exception as e:
+                # ignore errors
+                attachment_texts.append(f"[Error reading attachment: {e}]")
 
-        return full_text.strip()
+        if attachment_texts:
+            return "\n\n".join(attachment_texts)
+
+        return "No content found in ADO work item or its hierarchy."
