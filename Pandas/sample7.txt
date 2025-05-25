@@ -1,1 +1,129 @@
 
+import requests
+from requests.auth import HTTPBasicAuth
+import fitz  # PyMuPDF
+import docx
+from bs4 import BeautifulSoup
+import io
+
+
+class ADOConnector:
+    def __init__(self, key, org, project, token):
+        self.key = key
+        self.org = org
+        self.project = project
+        self.token = token
+        self.base_url = f"https://dev.azure.com/{org}/{project}/_apis/wit"
+
+    def get_document_content(self, work_item_url):
+        try:
+            if "/attachments/" in work_item_url:
+                return self._download_and_extract_attachment(work_item_url)
+            else:
+                work_item_id = self._extract_work_item_id(work_item_url)
+                print(f"Fetching work item ID: {work_item_id}")
+                visited = set()
+                all_text = self._extract_content_recursive(work_item_id, visited)
+                if all_text.strip():
+                    return all_text
+                else:
+                    return "Text: No content found in ADO work item or its hierarchy."
+        except Exception as e:
+            return f"Error retrieving content: {str(e)}"
+
+    def _extract_work_item_id(self, url):
+        return url.rstrip('/').split('/')[-1].split('?')[0]
+
+    def _extract_content_recursive(self, work_item_id, visited):
+        if work_item_id in visited:
+            return ""
+        visited.add(work_item_id)
+
+        url = f"{self.base_url}/workitems/{work_item_id}?$expand=relations&api-version=7.0"
+        response = requests.get(url, auth=HTTPBasicAuth('', self.token))
+
+        if response.status_code != 200:
+            print(f"Failed to retrieve the work item {work_item_id}")
+            return ""
+
+        work_item = response.json()
+        title = work_item['fields'].get("System.Title", "")
+        description = work_item['fields'].get("System.Description", "")
+        plain_text = self._extract_text_from_html(description)
+
+        full_text = f"Title: {title}\nText: {plain_text}\n"
+
+        if not plain_text.strip():
+            attachment_text = self._extract_attachment_text(work_item)
+            if attachment_text:
+                full_text += f"\nAttachment Text: {attachment_text}\n"
+
+        if 'relations' in work_item:
+            for rel in work_item['relations']:
+                if rel['rel'].startswith("System.LinkTypes.Hierarchy"):
+                    related_url = rel['url']
+                    related_id = related_url.rstrip('/').split('/')[-1]
+                    full_text += self._extract_content_recursive(related_id, visited)
+
+        return full_text
+
+    def _extract_text_from_html(self, html):
+        if not html:
+            return ""
+        soup = BeautifulSoup(html, 'html.parser')
+        return soup.get_text(separator=' ', strip=True)
+
+    def _extract_attachment_text(self, work_item):
+        if 'relations' not in work_item:
+            return ""
+
+        attachment_texts = []
+        for rel in work_item['relations']:
+            if rel['rel'] == "AttachedFile":
+                href = rel['url']
+                text = self._download_and_extract_attachment(href)
+                if text:
+                    attachment_texts.append(text)
+        return "\n".join(attachment_texts)
+
+    def _download_and_extract_attachment(self, url):
+        headers = {'Accept': 'application/octet-stream'}
+        response = requests.get(url, headers=headers, auth=HTTPBasicAuth('', self.token))
+        if response.status_code != 200:
+            print(f"Failed to download attachment from {url}")
+            return ""
+
+        content_type = response.headers.get('Content-Type', '').lower()
+        content = response.content
+        print(f"Detected Content-Type: {content_type}")
+
+        try:
+            if "pdf" in content_type:
+                return self._extract_text_from_pdf(content)
+            elif "wordprocessingml" in content_type or "docx" in url:
+                return self._extract_text_from_docx(content)
+            elif "text" in content_type or "octet-stream" in content_type:
+                return self._extract_text_from_txt(content)
+            else:
+                print("Unsupported attachment file type.")
+                return ""
+        except Exception as e:
+            print(f"Error extracting attachment content: {str(e)}")
+            return ""
+
+    def _extract_text_from_pdf(self, content):
+        text = ""
+        with fitz.open(stream=content, filetype="pdf") as doc:
+            for page in doc:
+                text += page.get_text()
+        return text.strip()
+
+    def _extract_text_from_docx(self, content):
+        doc = docx.Document(io.BytesIO(content))
+        return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+
+    def _extract_text_from_txt(self, content):
+        try:
+            return content.decode('utf-8').strip()
+        except UnicodeDecodeError:
+            return content.decode('latin-1').strip()
